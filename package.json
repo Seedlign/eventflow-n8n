@@ -1,0 +1,9 @@
+{
+  "name": "eventflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "build": "node scripts/build-workflow.mjs"
+  }
+}
