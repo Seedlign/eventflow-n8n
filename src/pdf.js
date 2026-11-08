@@ -1,28 +1,74 @@
-// minimal PDF 1.4 writer: one page, the three standard fonts, vector shapes only, so a Code node needs no library
-var PDF_FONTS = { R: 'Helvetica', B: 'Helvetica-Bold', M: 'Courier-Bold' };
+// minimal PDF 1.4 writer: one page, one JPEG background, embedded TrueType fonts, so a Code node needs no library or browser
 
-// standard fonts use WinAnsi, so anything outside Latin-1 degrades to '?' instead of corrupting the stream
+// embedded fonts use WinAnsi, so anything outside Latin-1 degrades to '?' instead of corrupting the stream
 function pdfText(s) {
   return String(s === null || s === undefined ? '' : s)
-    .replace(/[^\x20-\xff]/g, '?')
+    .replace(/[^\x20-\x7e\xa0-\xff]/g, '?')
     .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
-function pdfColor(rgb, stroke) {
-  return rgb.map(function (c) { return c.toFixed(3); }).join(' ') + (stroke ? ' RG' : ' rg');
+function fromBase64(b64) {
+  return typeof Buffer !== 'undefined' ? Buffer.from(b64, 'base64').toString('latin1') : atob(b64);
 }
 
-function pdfDoc(width, height, content) {
-  var fontKeys = Object.keys(PDF_FONTS);
-  var objs = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + width + ' ' + height + '] /Contents 4 0 R /Resources << /Font << '
-      + fontKeys.map(function (k, i) { return '/' + k + ' ' + (5 + i) + ' 0 R'; }).join(' ') + ' >> >> >>',
-    '<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream',
-  ].concat(fontKeys.map(function (k) {
-    return '<< /Type /Font /Subtype /Type1 /BaseFont /' + PDF_FONTS[k] + ' /Encoding /WinAnsiEncoding >>';
-  }));
+function pdfBase64(binary) {
+  return typeof Buffer !== 'undefined' ? Buffer.from(binary, 'latin1').toString('base64') : btoa(binary);
+}
+
+function hexColor(hex) {
+  var n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(function (c) { return (c / 255).toFixed(3); }).join(' ');
+}
+
+// width in px of s set in font f at size px with letter-spacing ls px; letter-spacing follows every glyph, as in the browser
+function textWidth(f, s, size, ls) {
+  var w = 0;
+  var str = String(s);
+  for (var i = 0; i < str.length; i++) {
+    var c = str.charCodeAt(i);
+    w += (c >= 32 && c <= 255 ? f.widths[c - 32] : f.widths['?'.charCodeAt(0) - 32]) * size / 1000 + (ls || 0);
+  }
+  return w;
+}
+
+// page is laid out in CSS px (the design's 1123x794) and mapped to A4 points
+function pdfPage(widthPx, heightPx, background, fonts) {
+  var k = 0.75;
+  var H = heightPx * k;
+  var ops = ['q ' + (widthPx * k).toFixed(2) + ' 0 0 ' + H.toFixed(2) + ' 0 0 cm /Bg Do Q'];
+  return {
+    text: function (xPx, baselinePx, fontKey, sizePx, hex, s, lsPx) {
+      ops.push('BT /' + fontKey + ' ' + (sizePx * k).toFixed(2) + ' Tf ' + ((lsPx || 0) * k).toFixed(3) + ' Tc ' + hexColor(hex) + ' rg '
+        + (xPx * k).toFixed(2) + ' ' + (H - baselinePx * k).toFixed(2) + ' Td (' + pdfText(s) + ') Tj ET');
+    },
+    build: function () { return pdfDoc(widthPx * k, H, ops.join('\n'), background, fonts); },
+  };
+}
+
+function pdfDoc(width, height, content, background, fonts) {
+  var objs = [];
+  var add = function (body) { objs.push(body); return objs.length; };
+  var catalog = add('');
+  var pages = add('');
+  var page = add('');
+  var contents = add('<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream');
+  var jpeg = fromBase64(background.b64);
+  var image = add('<< /Type /XObject /Subtype /Image /Width ' + background.w + ' /Height ' + background.h
+    + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + jpeg.length + ' >>\nstream\n' + jpeg + '\nendstream');
+  var fontRefs = Object.keys(fonts).map(function (key) {
+    var f = fonts[key];
+    var file = fromBase64(f.b64);
+    var fileRef = add('<< /Length ' + file.length + ' /Length1 ' + file.length + ' >>\nstream\n' + file + '\nendstream');
+    var desc = add('<< /Type /FontDescriptor /FontName /' + f.name + ' /Flags 32 /FontBBox [' + f.bbox.join(' ') + '] /ItalicAngle 0 /Ascent ' + f.ascent
+      + ' /Descent ' + f.descent + ' /CapHeight ' + f.cap + ' /StemV 80 /FontFile2 ' + fileRef + ' 0 R >>');
+    var font = add('<< /Type /Font /Subtype /TrueType /BaseFont /' + f.name + ' /FirstChar 32 /LastChar 255 /Widths [' + f.widths.join(' ')
+      + '] /Encoding /WinAnsiEncoding /FontDescriptor ' + desc + ' 0 R >>');
+    return '/' + key + ' ' + font + ' 0 R';
+  });
+  objs[catalog - 1] = '<< /Type /Catalog /Pages ' + pages + ' 0 R >>';
+  objs[pages - 1] = '<< /Type /Pages /Kids [' + page + ' 0 R] /Count 1 >>';
+  objs[page - 1] = '<< /Type /Page /Parent ' + pages + ' 0 R /MediaBox [0 0 ' + width.toFixed(2) + ' ' + height.toFixed(2) + '] /Contents ' + contents
+    + ' 0 R /Resources << /XObject << /Bg ' + image + ' 0 R >> /Font << ' + fontRefs.join(' ') + ' >> >> >>';
   var out = '%PDF-1.4\n';
   var offsets = [];
   objs.forEach(function (body, i) {
@@ -32,36 +78,6 @@ function pdfDoc(width, height, content) {
   var xref = out.length;
   out += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n'
     + offsets.map(function (o) { return ('0000000000' + o).slice(-10) + ' 00000 n \n'; }).join('')
-    + 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF';
+    + 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root ' + catalog + ' 0 R >>\nstartxref\n' + xref + '\n%%EOF';
   return out;
-}
-
-// small drawing vocabulary over the content stream
-function pdfCanvas() {
-  var ops = [];
-  return {
-    text: function (x, y, font, size, rgb, s, tracking) {
-      ops.push('BT /' + font + ' ' + size + ' Tf ' + (tracking || 0) + ' Tc ' + pdfColor(rgb) + ' ' + x + ' ' + y + ' Td (' + pdfText(s) + ') Tj ET');
-    },
-    rect: function (x, y, w, h, fill) {
-      ops.push(pdfColor(fill) + ' ' + x + ' ' + y + ' ' + w + ' ' + h + ' re f');
-    },
-    line: function (x1, y1, x2, y2, rgb, width) {
-      ops.push(pdfColor(rgb, true) + ' ' + width + ' w ' + x1 + ' ' + y1 + ' m ' + x2 + ' ' + y2 + ' l S');
-    },
-    // rounded rectangle like an n8n canvas node; fill and/or stroke
-    node: function (x, y, w, h, r, fill, stroke) {
-      var k = (r * 0.5523).toFixed(2);
-      var p = [x + r, y, 'm', x + w - r, y, 'l', x + w - r + +k, y, x + w, y + r - k, x + w, y + r, 'c',
-        x + w, y + h - r, 'l', x + w, y + h - r + +k, x + w - r + +k, y + h, x + w - r, y + h, 'c',
-        x + r, y + h, 'l', x + r - k, y + h, x, y + h - r + +k, x, y + h - r, 'c',
-        x, y + r, 'l', x, y + r - k, x + r - k, y, x + r, y, 'c'].join(' ');
-      ops.push((fill ? pdfColor(fill) + ' ' : '') + (stroke ? pdfColor(stroke, true) + ' 1 w ' : '') + p + ' h ' + (fill && stroke ? 'B' : fill ? 'f' : 'S'));
-    },
-    toString: function () { return ops.join('\n'); },
-  };
-}
-
-function pdfBase64(binary) {
-  return typeof Buffer !== 'undefined' ? Buffer.from(binary, 'latin1').toString('base64') : btoa(binary);
 }

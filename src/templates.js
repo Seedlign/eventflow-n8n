@@ -1,13 +1,5 @@
 var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-// one accent (n8n coral) on the single thing that matters per view; everything else is one cool neutral family
-var INK = [0.122, 0.125, 0.157];
-var MUTED = [0.400, 0.408, 0.451];
-var RULE = [0.867, 0.871, 0.894];
-var CORAL = [0.918, 0.294, 0.443];
-var WHITE = [1, 1, 1];
-// three nodes plus two connectors span the full 714pt content width, so the row ends on the rule line
-var NODE_W = 202, NODE_GAP = 54, NODE_STEP = NODE_W + NODE_GAP;
 var CSS = { ink: '#1f2028', muted: '#666873', rule: '#dddee4', ground: '#f5f5f7', coral: '#ea4b71' };
 
 function escapeHtml(v) {
@@ -27,17 +19,6 @@ function shortStamp(iso) {
   if (isNaN(d.getTime())) return '';
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   return MONTHS[d.getUTCMonth()].slice(0, 3) + ' ' + d.getUTCDate() + ', ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ' UTC';
-}
-
-// greedy wrap by character budget; Helvetica has no metrics here, so the budget is set conservatively
-function wrapWords(s, max) {
-  var lines = [''];
-  String(s).split(/\s+/).forEach(function (w) {
-    var cur = lines[lines.length - 1];
-    if (cur && (cur + ' ' + w).length > max) lines.push(w);
-    else lines[lines.length - 1] = cur ? cur + ' ' + w : w;
-  });
-  return lines;
 }
 
 function emailShell(body, footer) {
@@ -70,47 +51,51 @@ function entryPass(a, settings, originalEmail) {
   };
 }
 
-function lifecycleNode(c, x, y, label, stamp, done) {
-  c.node(x, y, NODE_W, 58, 8, done ? CORAL : WHITE, done ? null : RULE);
-  c.text(x + 16, y + 34, 'B', 12, done ? WHITE : INK, label);
-  c.text(x + 16, y + 16, 'R', 10, done ? WHITE : MUTED, stamp);
+// per-person text over the design handoff's background; positions are the browser layout of certificate.template.html in px
+var CERT_TEXT = {
+  recipient: { x: 100, base: 366.8, font: 'N', size: 96, color: '#1B1B26', ls: -2.4 },
+  statement: { x: 100, base: 428.8, font: 'S', size: 17, color: '#4A4A5A', maxWidth: 620, lineHeight: 26.35 },
+  registeredAt: { x: 146.6, base: 604, font: 'T', size: 12, color: '#6B6B7B' },
+  attendedAt: { x: 472.9, base: 604, font: 'T', size: 12, color: '#6B6B7B' },
+  completedAt: { x: 799.3, base: 604, font: 'T', size: 12, color: '#6B6B7B' },
+  date: { x: 100, base: 718, font: 'D', size: 14, color: '#1B1B26' },
+  verificationId: { x: 370.6, base: 716, font: 'I', size: 13, color: '#1B1B26' },
+  verifyUrl: { right: 1023, base: 716, font: 'I', size: 13, color: '#C93A5E' },
+};
+
+function wrapToWidth(f, s, size, maxWidth) {
+  var lines = [''];
+  String(s).split(/\s+/).forEach(function (w) {
+    var cur = lines[lines.length - 1];
+    var next = cur ? cur + ' ' + w : w;
+    if (cur && textWidth(f, next, size, 0) > maxWidth) lines.push(w);
+    else lines[lines.length - 1] = next;
+  });
+  return lines;
 }
 
 function certificatePdf(a, settings) {
-  var W = 842, H = 595, L = 64;
-  var c = pdfCanvas();
-  c.rect(0, 0, W, H, WHITE);
-  c.text(L, 523, 'B', 11, MUTED, 'n8n Philippines User Group', 0.6);
-  c.text(L, 506, 'R', 11, MUTED, settings.event_name);
-
-  c.text(L, 430, 'R', 15, INK, 'Certificate of completion');
-  var nameSize = a.full_name.length > 26 ? 36 : 48;
-  c.text(L, 372, 'B', nameSize, INK, a.full_name, -1);
-  var y = 338;
-  wrapWords('Checked in and submitted ' + a.project_name + '.', 72).slice(0, 2).forEach(function (line) {
-    c.text(L, y, 'R', 15, INK, line);
-    y -= 21;
+  var page = pdfPage(1123, 794, CERT_BG_JPEG, CERT_FONTS);
+  var put = function (key, value, size) {
+    var t = CERT_TEXT[key];
+    var sz = size || t.size;
+    var x = t.right ? t.right - textWidth(CERT_FONTS[t.font], value, sz, t.ls) : t.x;
+    page.text(x, t.base, t.font, sz, t.color, value, t.ls);
+  };
+  // handoff rule: about 22 characters fit at 96px, then scale down with a 60px floor
+  var name = String(a.full_name);
+  put('recipient', name, Math.max(60, Math.min(96, 96 * 22 / Math.max(name.length, 1))));
+  var st = CERT_TEXT.statement;
+  wrapToWidth(CERT_FONTS[st.font], 'Checked in and submitted ' + a.project_name + '.', st.size, st.maxWidth).slice(0, 2).forEach(function (line, i) {
+    page.text(st.x, st.base + i * st.lineHeight, st.font, st.size, st.color, line, 0);
   });
-
-  // the attendee's actual path through the workflow, drawn the way n8n draws connected nodes
-  var nodeY = 196;
-  c.line(L + NODE_W, nodeY + 29, L + NODE_STEP, nodeY + 29, RULE, 1.5);
-  c.line(L + NODE_STEP + NODE_W, nodeY + 29, L + 2 * NODE_STEP, nodeY + 29, RULE, 1.5);
-  lifecycleNode(c, L, nodeY, 'Registered', shortStamp(a.registered_at), false);
-  lifecycleNode(c, L + NODE_STEP, nodeY, 'Attended', shortStamp(a.checked_in_at), false);
-  lifecycleNode(c, L + 2 * NODE_STEP, nodeY, 'Completed', shortStamp(a.completed_at), true);
-
-  c.line(L, 150, W - L, 150, RULE, 0.75);
-  var cols = [
-    [L, 'Date', 'B', longDate(a.completed_at)],
-    [L + NODE_STEP, 'Verification ID', 'M', a.verification_id],
-    [L + 2 * NODE_STEP, 'Verify at', 'R', (settings.verify_base_url || '').replace(/^https?:\/\//, '') + a.verification_id],
-  ];
-  cols.forEach(function (col) {
-    c.text(col[0], 118, 'R', 9, MUTED, col[1], 0.4);
-    c.text(col[0], 98, col[2], col[2] === 'R' ? 9 : 13, INK, col[3]);
-  });
-  return pdfDoc(W, H, c.toString());
+  put('registeredAt', shortStamp(a.registered_at));
+  put('attendedAt', shortStamp(a.checked_in_at));
+  put('completedAt', shortStamp(a.completed_at));
+  put('date', longDate(a.completed_at));
+  put('verificationId', a.verification_id);
+  put('verifyUrl', (settings.verify_base_url || '').replace(/^https?:\/\//, '') + a.verification_id);
+  return page.build();
 }
 
 function certificate(a, settings, originalEmail) {

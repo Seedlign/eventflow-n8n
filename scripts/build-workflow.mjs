@@ -89,7 +89,7 @@ export function buildWorkflow(config) {
     },
     { name: 'Read Attendees', type: 'n8n-nodes-base.googleSheets', typeVersion: 4.5, position: [700, 120], executeOnce: true, alwaysOutputData: true,
       parameters: { ...sheet(config, 'Attendees'), options: {} } },
-    codeNode('Run Lifecycle Engine', [920, 120], ['sha256', 'tokens', 'engine', 'pdf', 'templates'], readGlue('engine')),
+    codeNode('Run Lifecycle Engine', [920, 120], ['sha256', 'tokens', 'engine', 'certassets', 'pdf', 'templates'], readGlue('engine')),
     {
       name: 'Route by Action', type: 'n8n-nodes-base.switch', typeVersion: 3.2, position: [1140, 120],
       parameters: { rules: { values: ACTIONS.map(([a]) => switchRule(a)) }, options: { fallbackOutput: 'extra', renameFallbackOutput: 'summary' } },

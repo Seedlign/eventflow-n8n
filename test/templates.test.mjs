@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadModules } from '../scripts/lib/modules.mjs';
 
-const { renderEmail, escapeHtml, pdfText } = loadModules(['pdf', 'templates']);
+const { renderEmail, escapeHtml, pdfText } = loadModules(['certassets', 'pdf', 'templates']);
 const settings = { event_name: 'n8n PH Buildathon', verify_base_url: 'https://credentials.n8n.ph/verify/' };
 const a = {
   user_id: 'REG-8001', full_name: 'Juancho <b>Santos</b>', email: 'j@dummymail.ph', token: 'N8NPH-1A2B3C4D',
