@@ -53,6 +53,7 @@ Live Event (POST /webhook/eventflow-live) -> Wrap Live Event --+                
 - **Re-runs are safe.** Only changed rows are written and emails go out only on a state change. Running the same batch twice adds 15 DUPLICATE log rows and sends nothing.
 - **Entry pass:** HTML email with the token as text and a QR image (api.qrserver.com).
 - **Certificate:** a real PDF (`src/pdf.js`, `src/templates.js`), generated in the Code node with no library and no outside service. It shows name, project, date, verification ID, a verify URL, and the attendee's actual path drawn as three n8n-style nodes (Registered, Attended, Completed) with timestamps. n8n coral is the only accent color.
+- **Notion dashboard (optional):** after the Sheets writes, changed attendees are mirrored into an `EventFlow Attendees` database (matched by User ID: update if the page exists, otherwise create) and every log row is added to `EventFlow Event Log`. Sheets stays the source of truth. The Notion database is read once per run, like the sheet. Notion errors continue past, so emails still go out, and if the read fails the sync is skipped instead of creating duplicate pages. Request bodies are built in `src/notion.js` and tested; `npm run notion:setup` creates both databases on a page.
 - **Demo inbox:** every email goes to `demo_recipient` in the `Event Settings` node, because the organizer addresses are `@dummymail.ph`. The original address is printed in each email. Clear the field to send to real addresses.
 
 ## Results on the organizer batch
@@ -82,4 +83,5 @@ Verified on the cloud instance and in tests:
 - Token validation is advisory on the organizer data, by design (see the first trap above). On real data, where people scan the pass we sent, `token_match` would be `true`.
 - The secret sits in the `Event Settings` node, so it shows on the canvas. Fine for a demo; production would move it to a credential or environment variable.
 - The verify URL (`credentials.n8n.ph/verify/...`) is printed on the certificate but no verify page exists yet.
-- Not done: Airtable, a funnel metrics tab, a reset flow. Code review and security review were skipped to make the deadline.
+- Notion is a one-way copy. Edits made in Notion never reach the sheet and are overwritten on the attendee's next change. Board and filtered views are made by hand once, because the Notion API cannot create views. Re-running a batch adds the DUPLICATE rows to the Notion log too, as it does in the sheet.
+- Not done: Airtable, a reset flow. Code review and security review were skipped to make the deadline.

@@ -9,6 +9,7 @@ import { concatModules, loadModules } from './lib/modules.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TRACK_D_URL = 'https://khylepanganiban.app.n8n.cloud/webhook/TrackDData';
 const { ATTENDEE_COLUMNS } = loadModules(['engine']);
+const { NOTION_VERSION } = loadModules(['notion']);
 const LOG_COLUMNS = ['log_id', 'run_at', 'sequence', 'event_type', 'intent', 'user_id', 'full_name', 'outcome', 'reason',
   'from_status', 'to_status', 'token_presented', 'token_match'];
 const ACTIONS = [['attendee', 'Upsert Attendee'], ['log', 'Append Event Log'], ['entry_pass', 'Send Entry Pass'], ['certificate', 'Send Certificate']];
@@ -53,6 +54,38 @@ function gmailNode(name, position, withAttachment) {
   };
 }
 
+// Notion is optional: the nodes are only built when config.notion has both database ids
+const notionEnabled = config => Boolean(config.notion && config.notion.attendeesDb && config.notion.logDb);
+
+function notionRequestNode(name, position) {
+  return {
+    name, type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position, onError: 'continueRegularOutput',
+    parameters: {
+      method: '={{ $json.method }}', url: '={{ $json.url }}',
+      authentication: 'predefinedCredentialType', nodeCredentialType: 'notionApi',
+      sendHeaders: true, headerParameters: { parameters: [{ name: 'Notion-Version', value: NOTION_VERSION }] },
+      sendBody: true, specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
+      // Notion allows about 3 requests a second
+      options: { batching: { batch: { batchSize: 1, batchInterval: 350 } } },
+    },
+  };
+}
+
+function notionNodes(config) {
+  return [
+    sticky('Note: Notion', [1660, -420], 700, 1120, '## 4. Notion dashboard\nA one-way mirror for people to watch: Sheets stays the source of truth.\n\nAfter every run, attendees missing from Notion are created and changed ones are updated, matched by **User ID**. A re-run sends nothing. Every log entry becomes a page in the event log, so blocked attempts show up too.\n\nNotion errors never stop the emails.', 6),
+    {
+      name: 'Read Notion Attendees', type: 'n8n-nodes-base.notion', typeVersion: 2.2, position: [1700, 600],
+      executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput',
+      parameters: { resource: 'databasePage', operation: 'getAll', databaseId: { __rl: true, value: config.notion.attendeesDb, mode: 'id' }, returnAll: true, simple: false, options: {} },
+    },
+    codeNode('Plan Notion Sync', [1920, 600], ['notion'], readGlue('notion-attendees')),
+    notionRequestNode('Sync Notion Attendee', [2140, 600]),
+    codeNode('Plan Notion Log', [1700, -40], ['notion'], readGlue('notion-log')),
+    notionRequestNode('Append Notion Log', [1920, -40]),
+  ];
+}
+
 function sticky(name, position, width, height, content, color) {
   return { name, type: 'n8n-nodes-base.stickyNote', typeVersion: 1, position, parameters: { content, width, height, color } };
 }
@@ -72,7 +105,7 @@ export function buildWorkflow(config) {
   const nodes = [
     sticky('Note: Intake', [-80, -180], 700, 640, '## 1. Intake\n**Batch:** the organizer HTTP Request pulls the Track D event batch.\n\n**Live:** `POST /webhook/eventflow-live` takes one registration, scan or submission and wraps it as a one-event batch.\n\nBoth feed the same engine.', 7),
     sticky('Note: Engine', [640, -180], 700, 640, '## 2. State engine\nReads the Attendees tab once, then walks events in `sequence` order against it.\n\nThe event label is only the intent. The row\'s status decides: Registered -> Attended -> Completed, or DUPLICATE / UNVERIFIED / INVALID.\n\nTokens and verification IDs are HMAC-SHA256 with the event secret. A re-run changes nothing and sends nothing.', 5),
-    sticky('Note: Outputs', [1360, -420], 700, 1120, '## 3. Writes and email\nChanged rows upsert into **Attendees** by `user_id`. Every event, accepted or not, appends to **EventLog** with its reason.\n\nEntry passes carry the token and a QR code. Certificates go only to rows with both a check-in and a submission, as an HTML attachment with name, date and verification ID.', 4),
+    sticky('Note: Outputs', [1360, -420], 280, 1120, '## 3. Writes and email\nChanged rows upsert into **Attendees** by `user_id`. Every event, accepted or not, appends to **EventLog** with its reason.\n\nEntry passes carry the token and a QR code. Certificates go only to rows with both a check-in and a submission, as a PDF attachment with name, date, verification ID and the attendee\'s lifecycle path.', 4),
     { name: 'Run Batch', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [0, 0], parameters: {} },
     { name: 'Get Track D Data', type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position: [220, 0], parameters: { method: 'GET', url: TRACK_D_URL, options: {} } },
     { name: 'Live Event', type: 'n8n-nodes-base.webhook', typeVersion: 2, position: [0, 260], webhookId: stableId('webhook'), parameters: { httpMethod: 'POST', path: 'eventflow-live', options: {} } },
@@ -84,6 +117,7 @@ export function buildWorkflow(config) {
         assignments: { assignments: [
           ['event_name', config.eventName], ['demo_recipient', config.demoRecipient], ['secret', config.secret],
           ['verify_base_url', 'https://credentials.n8n.ph/verify/'],
+          ...(notionEnabled(config) ? [['notion_attendees_db', config.notion.attendeesDb], ['notion_log_db', config.notion.logDb]] : []),
         ].map(([name, value]) => ({ id: stableId(`setting:${name}`), name, value, type: 'string' })) },
       },
     },
@@ -99,6 +133,7 @@ export function buildWorkflow(config) {
     gmailNode('Send Entry Pass', [1460, 180], false),
     gmailNode('Send Certificate', [1460, 400], true),
     { name: 'Funnel Summary', type: 'n8n-nodes-base.noOp', typeVersion: 1, position: [1460, 600], parameters: {} },
+    ...(notionEnabled(config) ? notionNodes(config) : []),
   ];
   for (const n of nodes) n.id = stableId(n.name);
 
@@ -117,6 +152,13 @@ export function buildWorkflow(config) {
   link('Run Lifecycle Engine', 'Route by Action');
   ACTIONS.forEach(([, target], i) => link('Route by Action', target, i));
   link('Route by Action', 'Funnel Summary', ACTIONS.length);
+  if (notionEnabled(config)) {
+    link('Funnel Summary', 'Read Notion Attendees');
+    link('Read Notion Attendees', 'Plan Notion Sync');
+    link('Plan Notion Sync', 'Sync Notion Attendee');
+    link('Append Event Log', 'Plan Notion Log');
+    link('Plan Notion Log', 'Append Notion Log');
+  }
 
   return { name: 'EventFlow | Track D | Event Lifecycle & Verified Credentials', nodes, connections, settings: { executionOrder: 'v1' }, pinData: {} };
 }
