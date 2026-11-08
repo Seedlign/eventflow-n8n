@@ -9,6 +9,7 @@ import { concatModules, loadModules } from './lib/modules.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TRACK_D_URL = 'https://khylepanganiban.app.n8n.cloud/webhook/TrackDData';
 const { ATTENDEE_COLUMNS } = loadModules(['engine']);
+const { NOTION_VERSION } = loadModules(['notion']);
 const LOG_COLUMNS = ['log_id', 'run_at', 'sequence', 'event_type', 'intent', 'user_id', 'full_name', 'outcome', 'reason',
   'from_status', 'to_status', 'token_presented', 'token_match'];
 const FUNNEL_COLUMNS = ['run_at', 'source', 'events', 'registered', 'attended', 'completed', 'ok', 'duplicate', 'unverified', 'invalid', 'retries'];
@@ -70,8 +71,40 @@ function sentStampNode(name, position, config, column) {
   };
 }
 
+// Notion is optional: the nodes are only built when config.notion has both database ids
+const notionEnabled = config => Boolean(config.notion && config.notion.attendeesDb && config.notion.logDb);
+
+function notionRequestNode(name, position) {
+  return {
+    name, type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position, onError: 'continueRegularOutput',
+    parameters: {
+      method: '={{ $json.method }}', url: '={{ $json.url }}',
+      authentication: 'predefinedCredentialType', nodeCredentialType: 'notionApi',
+      sendHeaders: true, headerParameters: { parameters: [{ name: 'Notion-Version', value: NOTION_VERSION }] },
+      sendBody: true, specifyBody: 'json', jsonBody: '={{ JSON.stringify($json.body) }}',
+      // Notion allows about 3 requests a second
+      options: { batching: { batch: { batchSize: 1, batchInterval: 350 } } },
+    },
+  };
+}
+
 function respondNode(name, position, parameters) {
   return { name, type: 'n8n-nodes-base.respondToWebhook', typeVersion: 1.1, position, parameters };
+}
+
+function notionNodes(config) {
+  return [
+    sticky('Note: Notion', [2000, -420], 760, 1420, '## 4. Notion dashboard\nA one-way mirror for people to watch: Sheets stays the source of truth.\n\nAfter every run, attendees missing from Notion are created and changed ones are updated, matched by **User ID**. A re-run sends nothing. Every log entry becomes a page in the event log, so blocked attempts show up too.\n\nNotion errors never stop the emails.', 6),
+    {
+      name: 'Read Notion Attendees', type: 'n8n-nodes-base.notion', typeVersion: 2.2, position: [2040, 780],
+      executeOnce: true, alwaysOutputData: true, onError: 'continueRegularOutput',
+      parameters: { resource: 'databasePage', operation: 'getAll', databaseId: { __rl: true, value: config.notion.attendeesDb, mode: 'id' }, returnAll: true, simple: false, options: {} },
+    },
+    codeNode('Plan Notion Sync', [2260, 780], ['notion'], readGlue('notion-attendees')),
+    notionRequestNode('Sync Notion Attendee', [2480, 780]),
+    codeNode('Plan Notion Log', [2040, -40], ['notion'], readGlue('notion-log')),
+    notionRequestNode('Append Notion Log', [2260, -40]),
+  ];
 }
 
 function sticky(name, position, width, height, content, color) {
@@ -94,7 +127,7 @@ export function buildWorkflow(config) {
   const nodes = [
     sticky('Note: Intake', [-80, -180], 700, 900, '## 1. Intake\n**Batch:** the organizer HTTP Request pulls the Track D event batch.\n\n**Live:** `POST /webhook/eventflow-live` (header `X-EventFlow-Key`) takes registrations, scans or submissions.\n\n**Webform:** `/form/register` takes a registration.\n\nAll three feed the same engine.', 7),
     sticky('Note: Engine', [640, -180], 700, 640, '## 2. State engine\nReads the Attendees tab once, then walks events in `sequence` order against it.\n\nThe event label is only the intent. The row\'s status decides: Registered -> Attended -> Completed, or DUPLICATE / UNVERIFIED / INVALID.\n\nScans and submissions are authorised by the **token**, never the user_id. Tokens are pre-issued (organizer snapshot) or HMAC-SHA256 with the event secret. A re-run changes nothing and sends nothing; unconfirmed emails are retried after 10 minutes.', 5),
-    sticky('Note: Outputs', [1360, -420], 900, 1420, '## 3. Writes, email and reply\nChanged rows upsert into **Attendees** by `user_id`. Every event, accepted or not, appends to **EventLog** with its reason.\n\nEntry passes carry the token and a QR code. Certificates go only to Attended rows that submitted, as a PDF with name, date and verification ID, plus an SVG badge. A delivered email stamps `pass_sent_at` / `certificate_sent_at`; a failed one leaves by the Gmail error output.\n\nEach run appends its counts to **Funnel**. Live webhook calls get the verdict back as JSON.', 4),
+    sticky('Note: Outputs', [1360, -420], 600, 1420, '## 3. Writes, email and reply\nChanged rows upsert into **Attendees** by `user_id`. Every event, accepted or not, appends to **EventLog** with its reason.\n\nEntry passes carry the token and a QR code. Certificates go only to Attended rows that submitted, as a PDF with name, date and verification ID, plus an SVG badge. A delivered email stamps `pass_sent_at` / `certificate_sent_at`; a failed one leaves by the Gmail error output.\n\nEach run appends its counts to **Funnel**. Live webhook calls get the verdict back as JSON.', 4),
     sticky('Note: Verify', [-80, 860], 960, 300, '## 4. Public verification\n`GET /webhook/verify?id=VER-...` is the link printed on every certificate. It vouches only for a **Completed** row holding that exact ID.', 6),
     { name: 'Run Batch', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [0, 0], parameters: {} },
     { name: 'Get Track D Data', type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position: [220, 0], parameters: { method: 'GET', url: TRACK_D_URL, options: {} } },
@@ -119,6 +152,7 @@ export function buildWorkflow(config) {
         assignments: { assignments: [
           ['event_name', config.eventName], ['demo_recipient', config.demoRecipient], ['secret', config.secret],
           ['verify_base_url', `${(config.n8nBaseUrl || '').replace(/\/+$/, '')}/webhook/verify?id=`],
+          ...(notionEnabled(config) ? [['notion_attendees_db', config.notion.attendeesDb], ['notion_log_db', config.notion.logDb]] : []),
         ].map(([name, value]) => ({ id: stableId(`setting:${name}`), name, value, type: 'string' })) },
       },
     },
@@ -150,6 +184,7 @@ export function buildWorkflow(config) {
       respondWith: 'text', responseBody: '={{ $json.html }}',
       options: { responseHeaders: { entries: [{ name: 'Content-Type', value: 'text/html; charset=utf-8' }] } },
     }),
+    ...(notionEnabled(config) ? notionNodes(config) : []),
   ];
   for (const n of nodes) n.id = stableId(n.name);
 
@@ -178,6 +213,14 @@ export function buildWorkflow(config) {
   link('Verify Credential', 'Read Credentials');
   link('Read Credentials', 'Render Verification');
   link('Render Verification', 'Reply with Verification');
+  if (notionEnabled(config)) {
+    link('Funnel Summary', 'Read Notion Attendees');
+    link('Reply to Scanner', 'Read Notion Attendees');
+    link('Read Notion Attendees', 'Plan Notion Sync');
+    link('Plan Notion Sync', 'Sync Notion Attendee');
+    link('Append Event Log', 'Plan Notion Log');
+    link('Plan Notion Log', 'Append Notion Log');
+  }
 
   return { name: 'EventFlow | Track D | Event Lifecycle & Verified Credentials', nodes, connections, settings: { executionOrder: 'v1' }, pinData: {} };
 }

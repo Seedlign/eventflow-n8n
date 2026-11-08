@@ -161,3 +161,58 @@ test('submission export carries no secret, sheet id or demo inbox and leaves the
   assert.ok(out.includes('REPLACE_SECRET') && out.includes('REPLACE_SHEET_ID'));
   assert.ok(JSON.stringify(built).includes(cfg.secret));
 });
+
+const notionConfig = { ...config, notion: { attendeesDb: 'db-att', logDb: 'db-log' } };
+const nwf = buildWorkflow(notionConfig);
+const nnode = name => nwf.nodes.find(n => n.name === name);
+
+test('notion nodes are only built when both database ids are configured', () => {
+  assert.equal(node('Read Notion Attendees'), undefined);
+  assert.equal(buildWorkflow({ ...config, notion: { attendeesDb: 'x' } }).nodes.some(n => n.type === 'n8n-nodes-base.notion'), false);
+  assert.equal(nnode('Read Notion Attendees').parameters.databaseId.value, 'db-att');
+  const settings = nnode('Event Settings').parameters.assignments.assignments;
+  assert.equal(settings.find(a => a.name === 'notion_log_db').value, 'db-log');
+});
+
+test('notion branches hang off the summary and the log write and every connection is real', () => {
+  const next = name => nwf.connections[name].main[0].map(c => c.node);
+  assert.deepEqual(next('Funnel Summary'), ['Read Notion Attendees']);
+  assert.deepEqual(next('Read Notion Attendees'), ['Plan Notion Sync']);
+  assert.deepEqual(next('Plan Notion Sync'), ['Sync Notion Attendee']);
+  assert.deepEqual(next('Append Event Log'), ['Plan Notion Log']);
+  assert.deepEqual(next('Plan Notion Log'), ['Append Notion Log']);
+  const names = new Set(nwf.nodes.map(n => n.name));
+  for (const { main } of Object.values(nwf.connections)) for (const out of main) for (const c of out) assert.ok(names.has(c.node), c.node);
+  for (const n of ['Read Notion Attendees', 'Sync Notion Attendee', 'Append Notion Log']) assert.equal(nnode(n).onError, 'continueRegularOutput', n);
+});
+
+// fake $ for the notion glue: Event Settings plus the router's attendee (0) and log (1) outputs
+const routed = { 0: [{ json: { action: 'attendee', user_id: 'REG-8001', full_name: 'Juancho', status: 'Attended' } }], 1: [{ json: { action: 'log', log_id: 'r#1', sequence: 1, event_type: 'checkin_scanned', outcome: 'OK' } }] };
+const $n = name => name === 'Event Settings'
+  ? { first: () => ({ json: { notion_attendees_db: 'db-att', notion_log_db: 'db-log' } }) }
+  : name === 'Read Attendees' ? { all: () => [{ json: {} }] } : { all: branch => routed[branch] };
+
+test('plan notion sync node creates or updates from the database read', () => {
+  const runSync = pages => new Function('$', '$input', nnode('Plan Notion Sync').parameters.jsCode)($n, { all: () => pages.map(json => ({ json })) });
+  assert.equal(runSync([{}])[0].json.method, 'POST');
+  assert.equal(runSync([{ id: 'p1', property_user_id: 'REG-8001' }])[0].json.url, 'https://api.notion.com/v1/pages/p1');
+  assert.deepEqual(runSync([{ error: 'unauthorized' }]), []);
+});
+
+test('plan notion log node turns each routed log row into a page', () => {
+  const out = new Function('$', '$input', nnode('Plan Notion Log').parameters.jsCode)($n, { all: () => [] });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].json.body.parent.database_id, 'db-log');
+});
+
+test('notion requests send the API version and pace themselves', () => {
+  const p = nnode('Sync Notion Attendee').parameters;
+  assert.equal(p.nodeCredentialType, 'notionApi');
+  assert.deepEqual(p.headerParameters.parameters, [{ name: 'Notion-Version', value: '2022-06-28' }]);
+  assert.ok(p.options.batching.batch.batchInterval >= 334);
+});
+
+test('live webhook calls also sync Notion, after the scanner has its reply', () => {
+  assert.deepEqual(nwf.connections['Reply to Scanner'].main[0].map(c => c.node), ['Read Notion Attendees']);
+  assert.deepEqual(nwf.connections['Funnel Summary'].main[0].map(c => c.node), ['Read Notion Attendees']);
+});
