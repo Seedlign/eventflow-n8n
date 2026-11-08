@@ -38,7 +38,7 @@ test('engine Code node emits rows, log, emails and a summary', () => {
   const count = a => out.filter(i => i.json.action === a).length;
   assert.deepEqual([count('attendee'), count('log'), count('entry_pass'), count('certificate'), count('summary')], [5, 15, 5, 4, 1]);
   const cert = out.find(i => i.json.action === 'certificate');
-  assert.equal(cert.binary.certificate.mimeType, 'text/html');
+  assert.equal(cert.binary.certificate.mimeType, 'application/pdf');
   assert.ok(out.filter(i => i.json.action === 'entry_pass').every(i => i.json.to === 'me@gmail.com'));
 });
 

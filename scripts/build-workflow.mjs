@@ -89,7 +89,7 @@ export function buildWorkflow(config) {
     },
     { name: 'Read Attendees', type: 'n8n-nodes-base.googleSheets', typeVersion: 4.5, position: [700, 120], executeOnce: true, alwaysOutputData: true,
       parameters: { ...sheet(config, 'Attendees'), options: {} } },
-    codeNode('Run Lifecycle Engine', [920, 120], ['sha256', 'tokens', 'engine', 'templates'], readGlue('engine')),
+    codeNode('Run Lifecycle Engine', [920, 120], ['sha256', 'tokens', 'engine', 'pdf', 'templates'], readGlue('engine')),
     {
       name: 'Route by Action', type: 'n8n-nodes-base.switch', typeVersion: 3.2, position: [1140, 120],
       parameters: { rules: { values: ACTIONS.map(([a]) => switchRule(a)) }, options: { fallbackOutput: 'extra', renameFallbackOutput: 'summary' } },
@@ -125,7 +125,7 @@ function loadConfig() {
   const path = join(ROOT, 'config', 'local.json');
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ sheetId: 'PASTE_SHEET_ID', demoRecipient: 'PASTE_DEMO_INBOX', secret: randomBytes(24).toString('hex'), eventName: 'n8n Philippines User Group Buildathon' }, null, 2));
+    writeFileSync(path, JSON.stringify({ sheetId: 'PASTE_SHEET_ID', demoRecipient: 'PASTE_DEMO_INBOX', secret: randomBytes(24).toString('hex'), eventName: 'Hack with the Flow: n8n Buildathon' }, null, 2));
     console.log(`created ${path}; fill in sheetId and demoRecipient, keep the secret`);
   }
   return JSON.parse(readFileSync(path, 'utf8'));
