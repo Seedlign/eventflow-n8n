@@ -28,7 +28,7 @@ Required nodes: HTTP Request (`GET https://khylepanganiban.app.n8n.cloud/webhook
 
 Three traps in this data, and what we decided:
 
-- **The scans carry tokens we never issued.** Registration events have no token, but check-in events arrive with fixed ones like `N8NPH-7A9B2C1D`. We generate our own token as the brief requires, match check-ins by `user_id`, and record `token_match=false` in the log instead of rejecting the scan. Rejecting would fail every check-in and no one would ever finish.
+- **The scans carry tokens we never issued.** Registration events have no token, but check-in events arrive with fixed ones like `N8NPH-7A9B2C1D`, the same ones listed in `attendees_database_snapshot`. Registration reuses the snapshot's token for that email (if nobody else holds it), so the token printed on the pass is the one the desk scans. That lets us **enforce** tokens: a scan or submission with a missing, unknown or someone else's token is INVALID. Everyone not in the snapshot (live and webform sign-ups) gets our HMAC token. Earlier builds matched by `user_id` and only flagged `token_match=false`; that let a known id with a forged token earn a certificate.
 - **Event labels are not trusted.** Two events arrive pre-labeled `duplicate_checkin_attempt` and `unverified_project_submission_attempt`. We read the label only as intent (register, check in, submit). The attendee's status in the sheet decides the outcome, so a real duplicate that arrives as a plain `checkin_scanned` is still caught.
 - **Angelica ends Completed, and the organizer snapshot says Attended.** Processing in sequence order, her seq 12 submission is rejected and her seq 15 submission is valid. We think the snapshot is stale. Say this in the pitch rather than hide it.
 
@@ -53,6 +53,11 @@ Live Event (POST /webhook/eventflow-live) -> Wrap Live Event --+                
 - **Re-runs are safe.** Only changed rows are written and emails go out only on a state change. Running the same batch twice adds 15 DUPLICATE log rows and sends nothing.
 - **Entry pass:** HTML email with the token as text and a QR image (api.qrserver.com).
 - **Certificate:** a real PDF built to the design handoff (`Buildathon certificate redesign`), generated in the Code node with no browser, library or outside service. The static design (card, grain, wire fan, logo, step cards, labels) is one JPEG baked from the handoff template (`src/certassets.js`, generated); the per-person text (name, statement, the three timestamps, date, verification ID, verify URL) is drawn on top in embedded Newsreader, Manrope and JetBrains Mono subsets at the positions the browser lays them out (`src/pdf.js`, `src/templates.js`). Matches the designer's render within anti-aliasing.
+- **Notion dashboard (optional):** after the Sheets writes, changed attendees are mirrored into an `EventFlow Attendees` database (matched by User ID: update if the page exists, otherwise create) and every log row is added to `EventFlow Event Log`. Sheets stays the source of truth. The Notion database is read once per run, like the sheet. Notion errors continue past, so emails still go out, and if the read fails the sync is skipped instead of creating duplicate pages. Request bodies are built in `src/notion.js` and tested; `npm run notion:setup` creates both databases on a page.
+- **Badge:** a square SVG "Verified Finisher" badge (name, event, date, verification ID) attached next to the PDF. Dates on the certificate, badge and verify page print in Manila time (UTC+8).
+- **Delivery is confirmed, not assumed.** Gmail failures leave by the error output; `Record Pass Sent` / `Record Certificate Sent` stamp `pass_sent_at` / `certificate_sent_at` only after a send, and the engine re-queues anything unconfirmed 10 minutes after `email_queued_at`.
+- **Certificate guard is exact:** only status `Attended` with a `checked_in_at` can complete, so a hand-edited status cannot mint a credential.
+- **More intakes and outputs:** a registration webform (`/form/register`), a key-protected live webhook that replies with the verdict, a public `GET /webhook/verify?id=` page, and a `Funnel` tab row per run.
 - **Demo inbox:** every email goes to `demo_recipient` in the `Event Settings` node, because the organizer addresses are `@dummymail.ph`. The original address is printed in each email. Clear the field to send to real addresses.
 
 ## Results on the organizer batch
@@ -79,7 +84,8 @@ Verified on the cloud instance and in tests:
 
 ## Known limits
 
-- Token validation is advisory on the organizer data, by design (see the first trap above). On real data, where people scan the pass we sent, `token_match` would be `true`.
-- The secret sits in the `Event Settings` node, so it shows on the canvas. Fine for a demo; production would move it to a credential or environment variable.
-- The verify URL (`credentials.n8n.ph/verify/...`) is printed on the certificate but no verify page exists yet.
-- Not done: Airtable, a funnel metrics tab, a reset flow. Code review and security review were skipped to make the deadline.
+- Two scans of the same token in the same instant through the live webhook can both read Registered. State stays correct (both write Attended) but two OK log rows appear.
+- The secret sits in the `Event Settings` node, so it shows on the canvas. Hand in `dist/eventflow-submission.json`, which replaces it (and the sheet id and demo inbox) with placeholders.
+- The verify link needs `n8nBaseUrl` in `config/local.json` to point at the instance running the workflow.
+- Notion is a one-way copy. Edits made in Notion never reach the sheet and are overwritten on the attendee's next change. Board and filtered views are made by hand once, because the Notion API cannot create views. Re-running a batch adds the DUPLICATE rows to the Notion log too, as it does in the sheet.
+- Not done: Airtable, a reset flow. Code review and security review were skipped to make the deadline.

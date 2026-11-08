@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadModules } from '../scripts/lib/modules.mjs';
 
-const { renderEmail, escapeHtml, pdfText } = loadModules(['certassets', 'pdf', 'templates']);
-const settings = { event_name: 'n8n PH Buildathon', verify_base_url: 'https://credentials.n8n.ph/verify/' };
+const { renderEmail, escapeHtml, pdfText, verificationPage, longDate, shortStamp } = loadModules(['certassets', 'pdf', 'templates']);
+const settings = { event_name: 'n8n PH Buildathon', verify_base_url: 'https://eventflow.app.n8n.cloud/webhook/verify?id=' };
 const a = {
   user_id: 'REG-8001', full_name: 'Juancho <b>Santos</b>', email: 'j@dummymail.ph', token: 'N8NPH-1A2B3C4D',
   project_name: 'Alert Dispatcher', registered_at: '2026-11-08T09:00:00Z', checked_in_at: '2026-11-08T10:15:12Z',
@@ -39,7 +39,7 @@ test('certificate is a PDF attachment', () => {
 
 test('pdf carries name, date, verification id, project and the three lifecycle stamps', () => {
   for (const s of ['Juancho <b>Santos</b>', 'November 8, 2026', 'VER-ABCDEF123456', 'Alert Dispatcher',
-    'credentials.n8n.ph/verify/VER-ABCDEF123456', 'Nov 8, 09:00 UTC', 'Nov 8, 10:15 UTC', 'Nov 8, 15:30 UTC']) {
+    'eventflow.app.n8n.cloud', '/webhook/verify?id=VER-ABCDEF123456', 'Nov 8, 17:00 PHT', 'Nov 8, 18:15 PHT', 'Nov 8, 23:30 PHT']) {
     assert.ok(pdf.includes(s), s);
   }
 });
@@ -53,4 +53,47 @@ test('pdf xref offsets point at their objects', () => {
 
 test('certificate email names the verification id', () => {
   assert.ok(cert.html.includes('VER-ABCDEF123456'));
+});
+
+test('certificate email links to the public verification page', () => {
+  assert.ok(cert.html.includes('href="https://eventflow.app.n8n.cloud/webhook/verify?id=VER-ABCDEF123456"'));
+});
+
+test('verification page vouches for an issued credential with name, project and date', () => {
+  const page = verificationPage({ ...a, status: 'Completed' }, 'VER-ABCDEF123456', 'n8n PH Buildathon');
+  assert.equal(page.valid, true);
+  for (const s of ['Valid credential', 'Juancho &lt;b&gt;Santos&lt;/b&gt;', 'Alert Dispatcher', 'November 8, 2026', 'VER-ABCDEF123456', 'n8n PH Buildathon']) {
+    assert.ok(page.html.includes(s), s);
+  }
+});
+
+test('verification page refuses an unknown id without echoing raw markup', () => {
+  const page = verificationPage(null, '<script>x</script>', 'n8n PH Buildathon');
+  assert.equal(page.valid, false);
+  assert.ok(page.html.includes('Not a valid credential'));
+  assert.ok(!page.html.includes('<script>x') && page.html.includes('&lt;script&gt;x'));
+});
+
+test('dates print in Manila time', () => {
+  assert.equal(longDate('2026-11-08T16:30:00Z'), 'November 9, 2026');
+  assert.equal(shortStamp('2026-11-08T16:30:00Z'), 'Nov 9, 00:30 PHT');
+  assert.equal(shortStamp('2026-11-08T01:05:00Z'), 'Nov 8, 09:05 PHT');
+  assert.equal(longDate('2026-11-08T23:30:00.000+08:00'), 'November 8, 2026');
+  assert.equal(longDate('not a date'), '');
+});
+
+test('verification page shows the Manila completion date', () => {
+  const page = verificationPage({ ...a, status: 'Completed', completed_at: '2026-11-08T16:30:00Z' }, 'VER-ABCDEF123456', 'x');
+  assert.ok(page.html.includes('November 9, 2026'));
+});
+
+test('certificate also carries an SVG badge with escaped name, date and verification id', () => {
+  assert.equal(cert.badge.fileName, 'badge-REG-8001.svg');
+  assert.equal(cert.badge.mimeType, 'image/svg+xml');
+  const svg = Buffer.from(cert.badge.base64, 'base64').toString('utf8');
+  assert.ok(svg.startsWith('<svg') && svg.endsWith('</svg>'));
+  for (const s of ['VERIFIED FINISHER', 'Juancho &lt;b&gt;Santos&lt;/b&gt;', 'November 8, 2026', 'VER-ABCDEF123456', 'n8n PH Buildathon']) {
+    assert.ok(svg.includes(s), s);
+  }
+  assert.ok(!svg.includes('<b>Santos'));
 });

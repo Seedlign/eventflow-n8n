@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "build": "node scripts/build-workflow.mjs"
+    "build": "node scripts/build-workflow.mjs",
+    "notion:setup": "node scripts/notion-setup.mjs"
   }
 }

@@ -1,6 +1,6 @@
-// one live event from the webhook becomes a one-item batch for the same engine
+// live events from the webhook become a batch for the same engine: one event, a bare array, or { raw_incoming_payloads }
 var body = $json.body || {};
-var events = Array.isArray(body.raw_incoming_payloads) ? body.raw_incoming_payloads : [body];
+var events = Array.isArray(body) ? body : Array.isArray(body.raw_incoming_payloads) ? body.raw_incoming_payloads : [body];
 return {
   json: {
     processing_batch_metadata: { batch_id: 'LIVE-' + new Date().toISOString(), source: 'webhook' },

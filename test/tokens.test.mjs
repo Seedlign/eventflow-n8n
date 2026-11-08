@@ -31,3 +31,8 @@ test('verification id changes if any signed field changes', () => {
   assert.notEqual(makeVerificationId('s', 'REG-8001', 'N8NPH-AAAAAAAB', '2026-11-08'), v);
   assert.notEqual(makeVerificationId('s', 'REG-8001', 'N8NPH-AAAAAAAA', '2026-11-09'), v);
 });
+
+test('a collision attempt re-derives the token, attempt 0 keeps the original', () => {
+  assert.equal(makeToken('s', 'REG-8001', 0), makeToken('s', 'REG-8001'));
+  assert.notEqual(makeToken('s', 'REG-8001', 1), makeToken('s', 'REG-8001'));
+});
